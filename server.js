@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 FIREBASE PRIVATE KEY dari Railway ENV
+// ================= FIREBASE =================
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -27,25 +27,31 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// ================= TOKEN STORAGE =================
+// ================= TOKEN MEMORY =================
 let tokens = {};
 
 // ================= HELPER =================
-function generateOTP() {
+function generateOTP(){
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-function hashOTP(otp) {
+function hashOTP(otp){
   return crypto.createHash("sha1").update(otp).digest("hex");
+}
+
+function generateToken(){
+  return crypto.randomBytes(32).toString("hex");
 }
 
 // ================= REQUEST OTP =================
 app.post("/request-otp", async (req,res)=>{
   try{
-    let {user} = req.body;
+    const { user } = req.body;
+
+    if(!user) return res.json({status:"no_user"});
 
     const snap = await db.ref("users/"+user).once("value");
-    let data = snap.val();
+    const data = snap.val();
 
     if(!data) return res.json({status:"user_not_found"});
     if(data.banned) return res.json({status:"banned"});
@@ -55,25 +61,53 @@ app.post("/request-otp", async (req,res)=>{
     const hashed = hashOTP(otp);
 
     const now = Date.now();
-    const expires = now + (30 * 60 * 1000); // 30 menit
+    const expiresAt = now + (30 * 60 * 1000); // 30 menit
 
+    // simpan OTP
     await db.ref("otp/"+user).set({
       hash: hashed,
       attempts: 0,
-      expiresAt: expires
+      expiresAt: expiresAt
     });
 
+    // AUTO DELETE SETELAH 30 MENIT (SERVER SIDE)
+    setTimeout(async ()=>{
+      const check = await db.ref("otp/"+user).once("value");
+      if(check.exists()){
+        await db.ref("otp/"+user).remove();
+        console.log("OTP expired & deleted:", user);
+      }
+    }, 30 * 60 * 1000);
+
+    // KIRIM EMAIL
     await transporter.sendMail({
       to: data.email,
-      subject: "Kode OTP Kingdom Empire",
-      text: `Halo ${user},
+      subject: "🔐 VERIFIKASI OTP - KINGDOM EMPIRE",
+      text: `━━━━━━━━━━━━━━━━━━━━━━
+🔐  VERIFIKASI AKUN KINGDOM EMPIRE
+━━━━━━━━━━━━━━━━━━━━━━
 
-Kode OTP kamu adalah: ${otp}
+Halo Calon Raja 👑,
 
-Kode berlaku selama 30 menit.
-Jangan berikan kode ini ke siapapun.
+Kamu melakukan login ke Kingdom Empire.
 
-Kingdom Empire`
+Masukkan kode OTP berikut:
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔢  KODE OTP ANDA
+━━━━━━━━━━━━━━━━━━━━━━
+
+        >>>  ${otp}  <<<
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+⏳ Kode berlaku 30 menit
+🚫 Jangan bagikan ke siapapun
+⚠ Jika bukan kamu, abaikan email ini
+
+━━━━━━━━━━━━━━━━━━━━━━
+Kingdom Empire Official System
+━━━━━━━━━━━━━━━━━━━━━━`
     });
 
     res.json({status:"otp_sent"});
@@ -86,36 +120,45 @@ Kingdom Empire`
 // ================= VERIFY OTP =================
 app.post("/verify-otp", async (req,res)=>{
   try{
-    let {user, otpInput} = req.body;
+    const { user, otpInput } = req.body;
+
+    if(!user || !otpInput) return res.json({status:"invalid_request"});
 
     const snap = await db.ref("otp/"+user).once("value");
-    let data = snap.val();
+    const data = snap.val();
 
     if(!data) return res.json({status:"no_otp"});
 
+    // CEK EXPIRED
     if(Date.now() > data.expiresAt){
       await db.ref("otp/"+user).remove();
       return res.json({status:"expired"});
     }
 
+    // CEK LIMIT 3X
     if(data.attempts >= 3){
       await db.ref("otp/"+user).remove();
       return res.json({status:"blocked"});
     }
 
-    if(hashOTP(otpInput) !== data.hash){
+    const hashedInput = hashOTP(otpInput);
+
+    if(hashedInput !== data.hash){
       await db.ref("otp/"+user+"/attempts")
         .set(data.attempts + 1);
       return res.json({status:"wrong"});
     }
 
-    // OTP benar
-    await db.ref("otp/"+user).remove();
+    // ================= OTP BENAR =================
+    await db.ref("otp/"+user).remove(); // langsung hapus
 
-    let token = Math.random().toString(36).substring(2);
-    tokens[token] = user;
+    const token = generateToken();
+    tokens[token] = {
+      user: user,
+      createdAt: Date.now()
+    };
 
-    res.json({status:"ok", token});
+    res.json({status:"success", token});
 
   }catch(err){
     res.status(500).json({error:err.message});
@@ -125,10 +168,12 @@ app.post("/verify-otp", async (req,res)=>{
 // ================= SAVE GAME =================
 app.post("/save", async (req,res)=>{
   try{
-    let {token, gold, wood, food, x, y} = req.body;
+    const { token, gold, wood, food, x, y } = req.body;
 
-    if(!tokens[token]) return res.json({status:"invalid"});
-    let user = tokens[token];
+    if(!token || !tokens[token])
+      return res.json({status:"invalid_token"});
+
+    const user = tokens[token].user;
 
     await db.ref("users/"+user).update({
       gold, wood, food, x, y,
@@ -136,52 +181,7 @@ app.post("/save", async (req,res)=>{
     });
 
     res.json({status:"saved"});
-  }catch(err){
-    res.status(500).json({error:err.message});
-  }
-});
 
-// ================= GET USERS =================
-app.get("/users", async (req,res)=>{
-  try{
-    const snap = await db.ref("users").once("value");
-    const data = snap.val();
-
-    if(!data) return res.json([]);
-
-    let result = Object.keys(data).map(username => ({
-      id: username,
-      username: username,
-      email: data[username].email || "-",
-      gold: data[username].gold || 0,
-      wood: data[username].wood || 0,
-      food: data[username].food || 0,
-      banned: data[username].banned || false
-    }));
-
-    res.json(result);
-  }catch(err){
-    res.status(500).json({error:err.message});
-  }
-});
-
-// ================= BAN =================
-app.post("/ban", async (req,res)=>{
-  try{
-    let {username} = req.body;
-    await db.ref("users/"+username).update({banned:true});
-    res.json({status:"banned"});
-  }catch(err){
-    res.status(500).json({error:err.message});
-  }
-});
-
-// ================= UNBAN =================
-app.post("/unban", async (req,res)=>{
-  try{
-    let {username} = req.body;
-    await db.ref("users/"+username).update({banned:false});
-    res.json({status:"unbanned"});
   }catch(err){
     res.status(500).json({error:err.message});
   }
@@ -194,4 +194,6 @@ app.get("/", (req,res)=>{
 
 // ================= START =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server jalan di port " + PORT));
+app.listen(PORT, ()=>{
+  console.log("Server berjalan di port " + PORT);
+});
