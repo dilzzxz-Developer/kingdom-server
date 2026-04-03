@@ -1,131 +1,97 @@
 const express = require("express");
-const admin = require("firebase-admin");
 const cors = require("cors");
+const admin = require("firebase-admin");
 
 const app = express();
-
-/* ================= CORS (AGAR REPLIT BISA AKSES) ================= */
 app.use(cors());
 app.use(express.json());
 
-/* ================= FIREBASE ADMIN CONNECT ================= */
-
+/* 🔥 CONNECT FIREBASE */
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://kingdom-empire-default-rtdb.asia-southeast1.firebasedatabase.app/"
+  databaseURL: "https://kingdom-empire-default-rtdb.firebaseio.com/"
 });
 
 const db = admin.database();
 
-/* ================= MEMORY TOKEN ================= */
 
-let tokens = {};
+/* ============================= */
+/*  TEST SERVER                  */
+/* ============================= */
+app.get("/", (req,res)=>{
+  res.send("API RUNNING 🔥");
+});
 
-/* ================= LOGIN ================= */
 
-app.post("/login", async (req, res) => {
-  try {
-    let { user, pass } = req.body;
+/* ============================= */
+/*  GET ALL USERS (FIX)          */
+/* ============================= */
+app.get("/users", async (req,res)=>{
+  try{
+    const snap = await db.ref("users").once("value");
+    const data = snap.val();
 
-    const snapshot = await db.ref("users/" + user).once("value");
-    const data = snapshot.val();
+    if(!data) return res.json([]);
 
-    if (!data || data.password !== pass) {
-      return res.json({ status: "fail" });
-    }
+    // 🔥 penting: object → array
+    const usersArray = Object.keys(data).map(key => ({
+        username: key,
+        ...data[key]
+    }));
 
-    let token = Math.random().toString(36).substring(2);
-    tokens[token] = user;
-
-    res.json({ status: "ok", token: token });
-
-  } catch (err) {
-    res.status(500).json({ error: err.toString() });
+    res.json(usersArray);
+  }catch(err){
+    res.status(500).json({error:err.message});
   }
 });
 
-/* ================= SAVE GAME ================= */
 
-app.post("/save", async (req, res) => {
-  try {
-    let { token, gold, wood, food, x, y } = req.body;
+/* ============================= */
+/*  GET SINGLE USER              */
+/* ============================= */
+app.get("/user/:username", async (req,res)=>{
+  try{
+    const username = req.params.username;
 
-    if (!tokens[token]) {
-      return res.json({ status: "invalid" });
-    }
+    const snap = await db.ref("users/"+username).once("value");
+    const data = snap.val();
 
-    let user = tokens[token];
+    if(!data) return res.status(404).json({error:"User not found"});
 
-    let body = {
-      gold,
-      wood,
-      food,
-      x,
-      y,
-      lastOnline: Date.now()
-    };
-
-    await db.ref("users/" + user).update(body);
-
-    res.json({ status: "saved" });
-
-  } catch (err) {
-    res.status(500).json({ error: err.toString() });
+    res.json(data);
+  }catch(err){
+    res.status(500).json({error:err.message});
   }
 });
 
-/* ================= GET ALL USERS (WEBSITE ADMIN) ================= */
 
-app.get("/users", async (req, res) => {
-  try {
-    const snapshot = await db.ref("users").once("value");
-    const data = snapshot.val();
-    res.json(data || {});
-  } catch (err) {
-    res.status(500).json({ error: err.toString() });
-  }
-});
+/* ============================= */
+/*  UPDATE RESOURCE USER         */
+/* ============================= */
+app.post("/update-resource", async (req,res)=>{
+  try{
+    const {username, gold, wood, food} = req.body;
 
-/* ================= BAN USER ================= */
+    if(!username)
+      return res.status(400).json({error:"username required"});
 
-app.post("/ban", async (req, res) => {
-  try {
-    let { username } = req.body;
-
-    await db.ref("users/" + username).update({
-      banned: true
+    await db.ref("users/"+username).update({
+      gold: gold ?? 0,
+      wood: wood ?? 0,
+      food: food ?? 0
     });
 
-    res.json({ status: "user banned" });
-  } catch (err) {
-    res.status(500).json({ error: err.toString() });
+    res.json({status:"success"});
+  }catch(err){
+    res.status(500).json({error:err.message});
   }
 });
 
-/* ================= UNBAN USER ================= */
 
-app.post("/unban", async (req, res) => {
-  try {
-    let { username } = req.body;
-
-    await db.ref("users/" + username).update({
-      banned: false
-    });
-
-    res.json({ status: "user unbanned" });
-  } catch (err) {
-    res.status(500).json({ error: err.toString() });
-  }
-});
-
-/* ================= ROOT TEST ================= */
-
-app.get("/", (req, res) => {
-  res.send("Kingdom Server Running 🔥");
-});
-
-/* ================= START SERVER ================= */
-
-app.listen(3000, () => console.log("Server jalan 🔥"));
+/* ============================= */
+/*  START SERVER                 */
+/* ============================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, ()=> console.log("Server running"));
