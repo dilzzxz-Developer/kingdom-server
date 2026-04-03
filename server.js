@@ -1,12 +1,15 @@
 const express = require("express");
 const admin = require("firebase-admin");
+const cors = require("cors");
 
 const app = express();
+
+/* ================= CORS (AGAR REPLIT BISA AKSES) ================= */
+app.use(cors());
 app.use(express.json());
 
 /* ================= FIREBASE ADMIN CONNECT ================= */
 
-// ambil private key dari Railway Variables
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -33,7 +36,6 @@ app.post("/login", async (req, res) => {
       return res.json({ status: "fail" });
     }
 
-    // buat token login
     let token = Math.random().toString(36).substring(2);
     tokens[token] = user;
 
@@ -74,13 +76,12 @@ app.post("/save", async (req, res) => {
   }
 });
 
-/* ================= GET ALL USERS (UNTUK WEBSITE ADMIN) ================= */
+/* ================= GET ALL USERS (WEBSITE ADMIN) ================= */
 
 app.get("/users", async (req, res) => {
   try {
     const snapshot = await db.ref("users").once("value");
     const data = snapshot.val();
-
     res.json(data || {});
   } catch (err) {
     res.status(500).json({ error: err.toString() });
@@ -119,7 +120,7 @@ app.post("/unban", async (req, res) => {
   }
 });
 
-/* ================= TEST ROOT ================= */
+/* ================= ROOT TEST ================= */
 
 app.get("/", (req, res) => {
   res.send("Kingdom Server Running 🔥");
