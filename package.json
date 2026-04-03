@@ -1,9 +1,13 @@
 {
   "name": "kingdom-server",
   "version": "1.0.0",
+  "description": "Backend Kingdom Game",
   "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
     "firebase-admin": "^12.0.0"
   }
 }
