@@ -6,28 +6,66 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* 🔥 CONNECT FIREBASE */
+// 🔐 FIREBASE PRIVATE KEY dari Railway ENV
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://kingdom-empire-default-rtdb.firebaseio.com/"
+  databaseURL: "https://kingdom-empire-default-rtdb.asia-southeast1.firebasedatabase.app/"
 });
 
 const db = admin.database();
 
+let tokens = {};
 
-/* ============================= */
-/*  TEST SERVER                  */
-/* ============================= */
-app.get("/", (req,res)=>{
-  res.send("API RUNNING 🔥");
+
+// ================= LOGIN =================
+app.post("/login", async (req,res)=>{
+  try{
+    let {user, pass} = req.body;
+
+    const snap = await db.ref("users/"+user).once("value");
+    let data = snap.val();
+
+    if(!data || data.password !== pass){
+      return res.json({status:"fail"});
+    }
+
+    if(data.banned){
+      return res.json({status:"banned"});
+    }
+
+    let token = Math.random().toString(36).substring(2);
+    tokens[token] = user;
+
+    res.json({status:"ok", token});
+  }catch(err){
+    res.status(500).json({error:err.message});
+  }
 });
 
 
-/* ============================= */
-/*  GET ALL USERS (FIX)          */
-/* ============================= */
+// ================= SAVE GAME =================
+app.post("/save", async (req,res)=>{
+  try{
+    let {token, gold, wood, food, x, y} = req.body;
+
+    if(!tokens[token]) return res.json({status:"invalid"});
+    let user = tokens[token];
+
+    await db.ref("users/"+user).update({
+      gold, wood, food, x, y,
+      lastOnline: Date.now()
+    });
+
+    res.json({status:"saved"});
+  }catch(err){
+    res.status(500).json({error:err.message});
+  }
+});
+
+
+// ================= GET ALL USERS (UNTUK WEBSITE ADMIN) =================
 app.get("/users", async (req,res)=>{
   try{
     const snap = await db.ref("users").once("value");
@@ -35,63 +73,56 @@ app.get("/users", async (req,res)=>{
 
     if(!data) return res.json([]);
 
-    // 🔥 penting: object → array
-    const usersArray = Object.keys(data).map(key => ({
-        username: key,
-        ...data[key]
+    let result = Object.keys(data).map(username => ({
+      id: username,
+      username: username,
+      email: data[username].email || "-",
+      password: data[username].password || "-",
+      gold: data[username].gold || 0,
+      wood: data[username].wood || 0,
+      food: data[username].food || 0,
+      x: data[username].x || 0,
+      y: data[username].y || 0,
+      banned: data[username].banned || false
     }));
 
-    res.json(usersArray);
+    res.json(result);
   }catch(err){
     res.status(500).json({error:err.message});
   }
 });
 
 
-/* ============================= */
-/*  GET SINGLE USER              */
-/* ============================= */
-app.get("/user/:username", async (req,res)=>{
+// ================= BAN USER =================
+app.post("/ban", async (req,res)=>{
   try{
-    const username = req.params.username;
-
-    const snap = await db.ref("users/"+username).once("value");
-    const data = snap.val();
-
-    if(!data) return res.status(404).json({error:"User not found"});
-
-    res.json(data);
+    let {username} = req.body;
+    await db.ref("users/"+username).update({banned:true});
+    res.json({status:"banned"});
   }catch(err){
     res.status(500).json({error:err.message});
   }
 });
 
 
-/* ============================= */
-/*  UPDATE RESOURCE USER         */
-/* ============================= */
-app.post("/update-resource", async (req,res)=>{
+// ================= UNBAN USER =================
+app.post("/unban", async (req,res)=>{
   try{
-    const {username, gold, wood, food} = req.body;
-
-    if(!username)
-      return res.status(400).json({error:"username required"});
-
-    await db.ref("users/"+username).update({
-      gold: gold ?? 0,
-      wood: wood ?? 0,
-      food: food ?? 0
-    });
-
-    res.json({status:"success"});
+    let {username} = req.body;
+    await db.ref("users/"+username).update({banned:false});
+    res.json({status:"unbanned"});
   }catch(err){
     res.status(500).json({error:err.message});
   }
 });
 
 
-/* ============================= */
-/*  START SERVER                 */
-/* ============================= */
+// ================= ROOT TEST =================
+app.get("/", (req,res)=>{
+  res.send("Kingdom API Running 🚀");
+});
+
+
+// 🔥 WAJIB UNTUK RAILWAY
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=> console.log("Server running"));
+app.listen(PORT, () => console.log("Server jalan di port " + PORT));
