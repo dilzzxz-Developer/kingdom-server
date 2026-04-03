@@ -1,6 +1,8 @@
-const express = require("express");
+    const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 
 const app = express();
 app.use(cors());
@@ -16,34 +18,109 @@ admin.initializeApp({
 
 const db = admin.database();
 
+// ================= EMAIL CONFIG =================
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// ================= TOKEN STORAGE =================
 let tokens = {};
 
+// ================= HELPER =================
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
-// ================= LOGIN =================
-app.post("/login", async (req,res)=>{
+function hashOTP(otp) {
+  return crypto.createHash("sha1").update(otp).digest("hex");
+}
+
+// ================= REQUEST OTP =================
+app.post("/request-otp", async (req,res)=>{
   try{
-    let {user, pass} = req.body;
+    let {user} = req.body;
 
     const snap = await db.ref("users/"+user).once("value");
     let data = snap.val();
 
-    if(!data || data.password !== pass){
-      return res.json({status:"fail"});
-    }
+    if(!data) return res.json({status:"user_not_found"});
+    if(data.banned) return res.json({status:"banned"});
+    if(!data.email) return res.json({status:"no_email"});
 
-    if(data.banned){
-      return res.json({status:"banned"});
-    }
+    const otp = generateOTP();
+    const hashed = hashOTP(otp);
 
-    let token = Math.random().toString(36).substring(2);
-    tokens[token] = user;
+    const now = Date.now();
+    const expires = now + (30 * 60 * 1000); // 30 menit
 
-    res.json({status:"ok", token});
+    await db.ref("otp/"+user).set({
+      hash: hashed,
+      attempts: 0,
+      expiresAt: expires
+    });
+
+    await transporter.sendMail({
+      to: data.email,
+      subject: "Kode OTP Kingdom Empire",
+      text: `Halo ${user},
+
+Kode OTP kamu adalah: ${otp}
+
+Kode berlaku selama 30 menit.
+Jangan berikan kode ini ke siapapun.
+
+Kingdom Empire`
+    });
+
+    res.json({status:"otp_sent"});
+
   }catch(err){
     res.status(500).json({error:err.message});
   }
 });
 
+// ================= VERIFY OTP =================
+app.post("/verify-otp", async (req,res)=>{
+  try{
+    let {user, otpInput} = req.body;
+
+    const snap = await db.ref("otp/"+user).once("value");
+    let data = snap.val();
+
+    if(!data) return res.json({status:"no_otp"});
+
+    if(Date.now() > data.expiresAt){
+      await db.ref("otp/"+user).remove();
+      return res.json({status:"expired"});
+    }
+
+    if(data.attempts >= 3){
+      await db.ref("otp/"+user).remove();
+      return res.json({status:"blocked"});
+    }
+
+    if(hashOTP(otpInput) !== data.hash){
+      await db.ref("otp/"+user+"/attempts")
+        .set(data.attempts + 1);
+      return res.json({status:"wrong"});
+    }
+
+    // OTP benar
+    await db.ref("otp/"+user).remove();
+
+    let token = Math.random().toString(36).substring(2);
+    tokens[token] = user;
+
+    res.json({status:"ok", token});
+
+  }catch(err){
+    res.status(500).json({error:err.message});
+  }
+});
 
 // ================= SAVE GAME =================
 app.post("/save", async (req,res)=>{
@@ -64,8 +141,7 @@ app.post("/save", async (req,res)=>{
   }
 });
 
-
-// ================= GET ALL USERS (UNTUK WEBSITE ADMIN) =================
+// ================= GET USERS =================
 app.get("/users", async (req,res)=>{
   try{
     const snap = await db.ref("users").once("value");
@@ -77,12 +153,9 @@ app.get("/users", async (req,res)=>{
       id: username,
       username: username,
       email: data[username].email || "-",
-      password: data[username].password || "-",
       gold: data[username].gold || 0,
       wood: data[username].wood || 0,
       food: data[username].food || 0,
-      x: data[username].x || 0,
-      y: data[username].y || 0,
       banned: data[username].banned || false
     }));
 
@@ -92,8 +165,7 @@ app.get("/users", async (req,res)=>{
   }
 });
 
-
-// ================= BAN USER =================
+// ================= BAN =================
 app.post("/ban", async (req,res)=>{
   try{
     let {username} = req.body;
@@ -104,8 +176,7 @@ app.post("/ban", async (req,res)=>{
   }
 });
 
-
-// ================= UNBAN USER =================
+// ================= UNBAN =================
 app.post("/unban", async (req,res)=>{
   try{
     let {username} = req.body;
@@ -116,13 +187,11 @@ app.post("/unban", async (req,res)=>{
   }
 });
 
-
-// ================= ROOT TEST =================
+// ================= ROOT =================
 app.get("/", (req,res)=>{
   res.send("Kingdom API Running 🚀");
 });
 
-
-// 🔥 WAJIB UNTUK RAILWAY
+// ================= START =================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server jalan di port " + PORT));
