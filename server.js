@@ -61,25 +61,23 @@ app.post("/request-otp", async (req,res)=>{
     const hashed = hashOTP(otp);
 
     const now = Date.now();
-    const expiresAt = now + (30 * 60 * 1000); // 30 menit
+    const expiresAt = now + (30 * 60 * 1000);
 
-    // simpan OTP
     await db.ref("otp/"+user).set({
       hash: hashed,
-      attempts: 0,
       expiresAt: expiresAt
     });
 
-    // AUTO DELETE SETELAH 30 MENIT (SERVER SIDE)
+    // AUTO DELETE
     setTimeout(async ()=>{
       const check = await db.ref("otp/"+user).once("value");
       if(check.exists()){
         await db.ref("otp/"+user).remove();
-        console.log("OTP expired & deleted:", user);
+        console.log("OTP expired:", user);
       }
     }, 30 * 60 * 1000);
 
-    // KIRIM EMAIL
+    // ================= EMAIL TEMPLATE =================
     await transporter.sendMail({
       to: data.email,
       subject: "🔐 VERIFIKASI OTP - KINGDOM EMPIRE",
@@ -122,37 +120,33 @@ app.post("/verify-otp", async (req,res)=>{
   try{
     const { user, otpInput } = req.body;
 
-    if(!user || !otpInput) return res.json({status:"invalid_request"});
+    if(!user || !otpInput)
+      return res.json({status:"invalid_request"});
 
     const snap = await db.ref("otp/"+user).once("value");
     const data = snap.val();
 
     if(!data) return res.json({status:"no_otp"});
 
-    // CEK EXPIRED
+    // EXPIRED
     if(Date.now() > data.expiresAt){
       await db.ref("otp/"+user).remove();
       return res.json({status:"expired"});
     }
 
-    // CEK LIMIT 3X
-    if(data.attempts >= 3){
-      await db.ref("otp/"+user).remove();
-      return res.json({status:"blocked"});
-    }
-
     const hashedInput = hashOTP(otpInput);
 
+    // ❌ SALAH = LANGSUNG HAPUS
     if(hashedInput !== data.hash){
-      await db.ref("otp/"+user+"/attempts")
-        .set(data.attempts + 1);
+      await db.ref("otp/"+user).remove();
       return res.json({status:"wrong"});
     }
 
-    // ================= OTP BENAR =================
-    await db.ref("otp/"+user).remove(); // langsung hapus
+    // ✅ BENAR
+    await db.ref("otp/"+user).remove();
 
     const token = generateToken();
+
     tokens[token] = {
       user: user,
       createdAt: Date.now()
@@ -174,6 +168,9 @@ app.post("/save", async (req,res)=>{
       return res.json({status:"invalid_token"});
 
     const user = tokens[token].user;
+
+    // 🔥 TOKEN SEKALI PAKAI
+    delete tokens[token];
 
     await db.ref("users/"+user).update({
       gold, wood, food, x, y,
