@@ -34,11 +34,9 @@ let tokens = {};
 function generateOTP(){
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
-
 function hashOTP(otp){
   return crypto.createHash("sha1").update(otp).digest("hex");
 }
-
 function generateToken(){
   return crypto.randomBytes(32).toString("hex");
 }
@@ -58,6 +56,7 @@ app.post("/request-otp", async (req,res)=>{
 
     const otp = generateOTP();
     const hashed = hashOTP(otp);
+
     const expiresAt = Date.now() + (30 * 60 * 1000);
 
     await db.ref("otp/"+user).set({
@@ -65,53 +64,24 @@ app.post("/request-otp", async (req,res)=>{
       expiresAt: expiresAt
     });
 
-    // auto delete OTP after 30 min
+    // auto delete OTP
     setTimeout(async ()=>{
       const check = await db.ref("otp/"+user).once("value");
-      if(check.exists()){
-        await db.ref("otp/"+user).remove();
-        console.log("OTP expired:", user);
-      }
+      if(check.exists()) await db.ref("otp/"+user).remove();
     }, 30 * 60 * 1000);
 
-    /* ================= SEND EMAIL HTML ================= */
+    // ✉️ EMAIL HTML TEMPLATE
     await transporter.sendMail({
       to: data.email,
       subject: "🔐 Verifikasi Login Kingdom Empire",
       html: `
       <div style="font-family:Arial;background:#0f172a;padding:40px;color:#fff">
         <div style="max-width:600px;margin:auto;background:#111827;border-radius:16px;padding:30px;text-align:center">
-          
-          <h1 style="color:#22c55e;margin-bottom:10px">
-            🔐 KINGDOM EMPIRE
-          </h1>
-
-          <p style="color:#9ca3af;font-size:16px">
-            Kamu mencoba login ke akun Kingdom Empire.
-          </p>
-
-          <div style="margin:30px 0;padding:20px;background:#0f172a;border-radius:12px">
-            <p style="margin:0;color:#9ca3af">Kode OTP kamu:</p>
-            <h2 style="letter-spacing:6px;font-size:40px;margin:10px 0;color:#22c55e">
-              ${otp}
-            </h2>
-            <p style="color:#9ca3af">Berlaku 30 menit</p>
-          </div>
-
-          <p style="color:#ef4444;font-size:14px">
-            Jangan bagikan kode ini ke siapapun!
-          </p>
-
-          <hr style="border:none;border-top:1px solid #1f2937;margin:30px 0">
-
-          <p style="font-size:12px;color:#6b7280">
-            Jika kamu tidak merasa login, abaikan email ini.
-          </p>
-
-          <p style="font-size:12px;color:#6b7280">
-            © Kingdom Empire System
-          </p>
-
+          <h1 style="color:#22c55e">🔐 KINGDOM EMPIRE</h1>
+          <p style="color:#9ca3af">Kode OTP login kamu:</p>
+          <h2 style="letter-spacing:6px;font-size:40px;color:#22c55e">${otp}</h2>
+          <p style="color:#9ca3af">Berlaku 30 menit</p>
+          <p style="color:#ef4444">Jangan bagikan kode ini!</p>
         </div>
       </div>`
     });
@@ -126,8 +96,6 @@ app.post("/request-otp", async (req,res)=>{
 app.post("/verify-otp", async (req,res)=>{
   try{
     const { user, otpInput } = req.body;
-    if(!user || !otpInput)
-      return res.json({status:"invalid_request"});
 
     const snap = await db.ref("otp/"+user).once("value");
     const data = snap.val();
@@ -138,9 +106,7 @@ app.post("/verify-otp", async (req,res)=>{
       return res.json({status:"expired"});
     }
 
-    const hashedInput = hashOTP(otpInput);
-
-    if(hashedInput !== data.hash){
+    if(hashOTP(otpInput) !== data.hash){
       await db.ref("otp/"+user).remove();
       return res.json({status:"wrong"});
     }
@@ -148,10 +114,7 @@ app.post("/verify-otp", async (req,res)=>{
     await db.ref("otp/"+user).remove();
 
     const token = generateToken();
-    tokens[token] = {
-      user: user,
-      createdAt: Date.now()
-    };
+    tokens[token] = { user, createdAt: Date.now() };
 
     res.json({status:"success", token});
   }catch(err){
@@ -159,18 +122,21 @@ app.post("/verify-otp", async (req,res)=>{
   }
 });
 
+/* ================= VERIFY TOKEN (UNTUK WEBSOCKET) ================= */
+app.post("/verify-token", async (req,res)=>{
+  const { token } = req.body;
+  if(!token || !tokens[token]) return res.json({valid:false});
+  res.json({valid:true, user:tokens[token].user});
+});
+
 /* ================= SAVE GAME ================= */
 app.post("/save", async (req,res)=>{
   try{
     const { token, gold, wood, food, x, y } = req.body;
-
-    if(!token || !tokens[token])
-      return res.json({status:"invalid_token"});
+    if(!token || !tokens[token]) return res.json({status:"invalid_token"});
 
     const user = tokens[token].user;
-
-    // token sekali pakai (anti spam)
-    delete tokens[token];
+    delete tokens[token]; // sekali pakai
 
     await db.ref("users/"+user).update({
       gold, wood, food, x, y,
@@ -183,13 +149,46 @@ app.post("/save", async (req,res)=>{
   }
 });
 
-/* ================= ROOT ================= */
-app.get("/", (req,res)=>{
-  res.send("Kingdom API Running 🚀");
+/* ================= ADMIN: GET USERS ================= */
+app.get("/get-users", async (req,res)=>{
+  const snap = await db.ref("users").once("value");
+  const data = snap.val();
+  if(!data) return res.json([]);
+
+  const users = Object.keys(data).map(u => ({
+    username: u,
+    email: data[u].email || "-",
+    gold: data[u].gold || 0,
+    wood: data[u].wood || 0,
+    food: data[u].food || 0,
+    banned: data[u].banned || false,
+    lastOnline: data[u].lastOnline || 0
+  }));
+
+  res.json(users);
 });
 
-/* ================= START SERVER ================= */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=>{
-  console.log("Server berjalan di port " + PORT);
+/* ================= ADMIN EDIT RESOURCE ================= */
+app.post("/admin/edit-resource", async (req,res)=>{
+  const { username, gold, wood, food } = req.body;
+  await db.ref("users/"+username).update({
+    gold:Number(gold),
+    wood:Number(wood),
+    food:Number(food)
+  });
+  res.json({status:"updated"});
 });
+
+/* ================= ADMIN BAN ================= */
+app.post("/admin/ban", async (req,res)=>{
+  const { username, status } = req.body;
+  await db.ref("users/"+username).update({ banned:status });
+  res.json({status:"done"});
+});
+
+/* ================= ROOT ================= */
+app.get("/", (req,res)=> res.send("Kingdom API Running 🚀"));
+
+/* ================= START ================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, ()=> console.log("Server jalan di port " + PORT));
